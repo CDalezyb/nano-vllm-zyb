@@ -23,8 +23,8 @@ class Sequence:
         self.last_token = token_ids[-1]                # 最后一个 token 的id
         self.num_tokens = len(self.token_ids)          # 动态变化的，等于prompt长度+已经生成的token 
         self.num_prompt_tokens = len(token_ids)
-        self.num_cached_tokens = 0                     # what's this for？when this changes?
-        self.block_table = []
+        self.num_cached_tokens = 0                     # 这个sequence中，使用之前的cached_kv的token数
+        self.block_table = []                          # 分配的 block_table
         self.temperature = sampling_params.temperature # 采用参数
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
@@ -60,10 +60,10 @@ class Sequence:
         return (self.num_tokens + self.block_size - 1) // self.block_size
 
     @property
-    def last_block_num_tokens(self): #最后一个block里的token数
+    def last_block_num_tokens(self): # 最后一个block里的token数
         return self.num_tokens - (self.num_blocks - 1) * self.block_size
 
-    def block(self, i): #返回第 [i] 个block对应的tokens
+    def block(self, i): # 返回第 [i] 个block 对应的tokens
         assert 0 <= i < self.num_blocks
         return self.token_ids[i * self.block_size : (i + 1) * self.block_size]
 
