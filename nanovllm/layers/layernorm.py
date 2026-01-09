@@ -3,7 +3,9 @@ from torch import nn
 
 
 class RMSNorm(nn.Module):
-
+    '''
+    计算逻辑：RMS过程使用fp32进行计算，在计算完成后再转回原始 dtype
+    '''
     def __init__(
         self,
         hidden_size: int,
@@ -44,6 +46,7 @@ class RMSNorm(nn.Module):
         x: torch.Tensor,
         residual: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # 这不是可以直接合到一个吗？
         if residual is None:
             return self.rms_forward(x)
         else:
