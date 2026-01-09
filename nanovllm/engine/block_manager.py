@@ -67,7 +67,7 @@ class BlockManager:
         # ？ 为什么不清理 hash_to_block_id 对应的 block_id 值
 
     def can_allocate(self, seq: Sequence) -> bool:
-        """判断：是否有足够的空闲块，为指定序列分配所需的全部块"""
+        """判断：是否有足够的空闲块，为指定序列分配所需的全部块，prefill时使用"""
         return len(self.free_block_ids) >= seq.num_blocks
 
     # allocate kv_cache_blocks for the given Sequence
@@ -120,7 +120,7 @@ class BlockManager:
         seq.block_table.clear()
 
     def can_append(self, seq: Sequence) -> bool:
-        """判断：是否有足够的空闲块，为指定序列分配下一个块"""
+        """判断：是否有足够的空闲块，为指定序列分配下一个块，decode时使用"""
         return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
 
     def may_append(self, seq: Sequence):
