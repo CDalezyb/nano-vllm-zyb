@@ -24,10 +24,12 @@ class Scheduler:
         self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
-        # prefill
+        '''只是确定哪些 Sequence 会被调度到，并不完成实际运行'''
+        # 1. prefill 阶段
         scheduled_seqs = []
         num_seqs = 0
         num_batched_tokens = 0
+        # waiting 队列有等待prefill的 Sequence，并且 num_seqs < 设定的 max_num_seqs
         while self.waiting and num_seqs < self.max_num_seqs:
             seq = self.waiting[0]
             if num_batched_tokens + len(
@@ -35,16 +37,19 @@ class Scheduler:
             ) > self.max_num_batched_tokens or not self.block_manager.can_allocate(seq):
                 break
             num_seqs += 1
+            # 为一个prefill阶段的新Sequence 分配 block
             self.block_manager.allocate(seq)
             num_batched_tokens += len(seq) - seq.num_cached_tokens
             seq.status = SequenceStatus.RUNNING
             self.waiting.popleft()
             self.running.append(seq)
             scheduled_seqs.append(seq)
+        # 这次 schedule如果有prefill，则不进行decode, 提前返回
         if scheduled_seqs:
             return scheduled_seqs, True
 
-        # decode
+        # 2. decode 阶段
+        # running队列有等待decode的Sequence 且 num_seqs < 设定的 max_num_seqs
         while self.running and num_seqs < self.max_num_seqs:
             seq = self.running.popleft()
             while not self.block_manager.can_append(seq):
