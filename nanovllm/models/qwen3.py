@@ -114,6 +114,10 @@ class Qwen3MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
+        '''
+            gate_up_proj  ColumnParallelLinear(TP)
+            down_proj     RowParallelLinear(TP)
+        '''
         gate_up = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
         x = self.down_proj(x)
