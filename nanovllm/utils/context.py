@@ -13,7 +13,11 @@ class Context:
     context_lens: torch.Tensor | None = None
     block_tables: torch.Tensor | None = None
 
-
+# 关于 _CONTEXT 的访问和赋值规则：
+# 如果是仅访问：函数内部试图访问一个变量时，解释器会先在「局部作用域」（函数内部）查找该变量；
+#              如果局部作用域中不存在，会自动向上查找「全局作用域」（模块级别）的变量；
+#               因此get_context()可以直接获取全局的_CONTEXT，无需显式声明global。
+# 如果需要修改：如果不加 global，python会认为_CONTEXT 是函数内的局部变量，会创建局部变量，全局作用域的_CONTEXT没有改变
 _CONTEXT = Context()
 
 
