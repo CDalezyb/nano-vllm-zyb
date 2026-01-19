@@ -91,44 +91,64 @@ class ModelRunner:
         return method(*args)
 
     def warmup_model(self):
+        # torch 内存重置
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         max_num_batched_tokens, max_model_len = (
             self.config.max_num_batched_tokens,
             self.config.max_model_len,
         )
+        # 计算两个约束中较紧的那个
         num_seqs = min(
             max_num_batched_tokens // max_model_len, self.config.max_num_seqs
         )
         seqs = [Sequence([0] * max_model_len) for _ in range(num_seqs)]
+        # 只跑 prefill阶段，prefill = True
         self.run(seqs, True)
+        # 清空 cache
         torch.cuda.empty_cache()
 
     def allocate_kv_cache(self):
+        '''
+            分配给KV cache显存 = gpu总显存 - 不使用KV cache做1次推理时的显存占用（包括模型本身和推理过程中的中间数据）
+            warmup_model 是为了估计到 中间activations的大小 ？
+        '''
         config = self.config
         hf_config = config.hf_config
+        # total 是物理硬件决定
+        # free 是当前 free 的
         free, total = torch.cuda.mem_get_info()
         used = total - free
         peak = torch.cuda.memory_stats()["allocated_bytes.all.peak"]
         current = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+        # 此处 self.world_size 就等于 TPS_size
+        # num_kv_heads 等于分配到每个TP 的头数
         num_kv_heads = hf_config.num_key_value_heads // self.world_size
         head_dim = getattr(
             hf_config,
             "head_dim",
             hf_config.hidden_size // hf_config.num_attention_heads,
         )
-        # 每个 block 的大小（bytes）：2*num_layers*block_size*num_heads*head_dim*dtype
+        # 每个 block 的大小（bytes）：2*num_layers*block_size*num_kv_heads*head_dim*dtype
         block_bytes = (
             2
             * hf_config.num_hidden_layers
             * self.block_size
-            * num_kv_heads
+            * num_kv_heads # 在这个TP 实例上的tp head_num
             * head_dim
             * hf_config.torch_dtype.itemsize
         )
+        # 最多可以分配出多少个 kv_cache block
+        # total * config.gpu_memory_utilization: 计算 GPU允许用于本次任务（模型 + KV Cache）的最大显存上限（字节数）
+        # - used（扣除当前已占用显存）
+        # peak - current: 表示「本进程历史峰值显存」与「当前实时显存」的差值，对应模型 warmup（一次推理）后，释放的中间数据显存余量(即中间激活值的占用)
+        # peak    = 模型权重 + 其他（框架等固定开销，peak和current一样）+ 中间计算得到的临时KV激活 + 除KV以外的其他中间激活值（包括Q、MLP、mask等在内）
+        # current = 模型权重 + 其他（框架等固定开销，peak和current一样）
+        # -(peak - current）: 表示从扣去模型权重以后的显存里再除掉 「下次推理必须复用的临时中间激活值显存」
         config.num_kvcache_blocks = (
-            int(total * config.gpu_memory_utilization - used - peak + current)
+            int(total * config.gpu_memory_utilization - used - (peak - current))
             // block_bytes
+            # // 向下取整
         )
         assert config.num_kvcache_blocks > 0
         self.kv_cache = torch.empty(
@@ -141,8 +161,11 @@ class ModelRunner:
         )
         layer_id = 0
         for module in self.model.modules():
+            # 将 kv_cache 和实际的tensor对应，module.k_cache/v_cache 见 nanovllm/layers/attention.py 的Attention类
             if hasattr(module, "k_cache") and hasattr(module, "v_cache"):
+                # k 的 indx 为 0
                 module.k_cache = self.kv_cache[0, layer_id]
+                # v 的 index 为 1
                 module.v_cache = self.kv_cache[1, layer_id]
                 layer_id += 1
 
