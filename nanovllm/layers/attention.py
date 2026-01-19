@@ -66,9 +66,16 @@ class Attention(nn.Module):
         self.k_cache = self.v_cache = torch.tensor([])
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
+        # q  shape: [S, num_heads, head_dim]
+        # k&v shape: [S, num_kv_heads, head_dim]
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
+        # 在 warmup 时，k_cache 和 v_cache 还没有值，所以不会使用 kv_cache
+        # 在 warmup 结束并且 model_runner 进行 allocate_kv_cache 完以后 kv_cache 才会有值
+        # see ModelRunner 的 allocate_kv_cache
         if k_cache.numel() and v_cache.numel():
+            # decode阶段，先使用kv更新 k_cache 和 v_cache
+            # causal mask， Q是要跟当前和之前的token 的kv做计算
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
         if context.is_prefill:
             if context.block_tables is not None:  # prefix cache

@@ -305,8 +305,11 @@ class ModelRunner:
         input_ids, positions = (
             self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
         )
+        # 采样使用主进程来做
         temperatures = self.prepare_sample(seqs) if self.rank == 0 else None
+        # logits 是概率分布，softmax在 sampler 里做
         logits = self.run_model(input_ids, positions, is_prefill)
+        # sampler 只在 rank0 计算
         token_ids = (
             self.sampler(logits, temperatures).tolist() if self.rank == 0 else None
         )

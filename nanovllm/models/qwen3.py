@@ -50,6 +50,7 @@ class Qwen3Attention(nn.Module):
             self.total_num_kv_heads,
             bias=qkv_bias,
         )
+        # o需要规约（all_reduce)
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
@@ -77,16 +78,45 @@ class Qwen3Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        ''' 
+            in prefill phase: S = prompt_length
+            in decode  phase: S = 1
+        '''
+        # hidden_states: [S, hidden_size]
+        # qkv :[ S, q_size + 2 * kv_size]
+        # q_size = num_heads  * head_dim
+        # kv_size = num_kv_heads  * head_dim
         qkv = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # q :[ S,    num_heads, head_dim]
+        # kv :[ S, num_kv_heads, head_dim], num_heads%num_kv_heads = 0
         q = q.view(-1, self.num_heads, self.head_dim)
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         if not self.qkv_bias:
             q = self.q_norm(q)
             k = self.k_norm(k)
+        # decode 时，positions 是最近生成的 token 在 seq 中的绝对位置（位置计数包括prompt）
+        # prefill时：positions 是 prompt 的所有 token 的位置
         q, k = self.rotary_emb(positions, q, k)
+        # Step1： attention 之前的shape
+        #   q shape       : [S, num_heads, head_dim] ,S = S_in if prefill else 1
+        #   kv_cache shape: [S_in+S_out+1, num_kv_heads, head_dim]
+        # Step2： 将Q和KV头数进行对齐，GQA，将kv复制若干次（逻辑层上复制，其实物理层上没有复制，因为数据是相同的）
+        #   q shape       : [S, num_heads, head_dim] ,S = S_in if prefill else 1
+        #   kv_cache shape: [S_in + S_out + 1, num_heads, head_dim]
+        # Step3：SDPA计算：softmax(Q@K^T)
+        #   Q reshape   :  [               1, num_heads, head_dim] to [num_heads,                1, head_dim]
+        #   K.reshape^T :  [S_in + S_out + 1, num_heads, head_dim] to [num_heads, head_dim, S_in + S_out + 1]
+        #   Q@K^T shape :  [num_heads, 1, S_in + S_out + 1]
+        #   softmax 对 sql_len维度做，不改变维度
+        # Step-4: atten_scores@V
+        #   V.reshape     :  [S_in + S_out + 1, num_heads, head_dim] to [num_heads, S_in + S_out + 1, head_dim]
+        #   atten_scores@V:  [num_heads, 1, S_in + S_out + 1] @ [num_heads, S_in + S_out + 1, head_dim] = [num_heads, 1, head_dim]
+        # 最后会做 reshape :  [1, num_heads, head_dim]
+        # o shape:  [S, self.num_heads, self.head_dim](decode, S=1)
         o = self.attn(q, k, v)
+        # o.flatten(1, -1)： 从idx=1 的维度进行 flatten
         output = self.o_proj(o.flatten(1, -1))
         return output
 
@@ -158,11 +188,14 @@ class Qwen3DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if residual is None:
+        if residual is None: # 第一层 layer，对hidden_states 做norm，并将其作为残差
             hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
-        else:
+        else: # 后续 layer
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
+        # attention 计算与残差更新
         hidden_states = self.self_attn(positions, hidden_states)
+        # post_attention_layernorm 表示在 attention 后做的一个 PRE-NORM！！！
+        # 此处，返回的 residual 其实就是 输入的 hidden_states
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
@@ -188,10 +221,13 @@ class Qwen3Model(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
+        # embedding first
         hidden_states = self.embed_tokens(input_ids)
         residual = None
         for layer in self.layers:
+            # Qwen3DecoderLayer
             hidden_states, residual = layer(positions, hidden_states, residual)
+        # 最后跟着一个 RMSNorm
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
 

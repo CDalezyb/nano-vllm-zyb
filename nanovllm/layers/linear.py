@@ -12,8 +12,8 @@ def divide(numerator, denominator):
 class LinearBase(nn.Module):
     '''
         抽象类
-            tp_dim: 在哪一个维度进行 TP 切分: 0->列 TP, 1->行 TP
-            注意 weight 中 output_size 在前, intput_size 在后（这里可以参考 pytorch的linear实现
+            tp_dim: 在 weight矩阵的 哪一个维度进行 TP 切分: 0->列 TP, 1->行 TP
+            注意 weight 中 output_size 在前, intput_size 在后（这里可以参考 pytorch的linear实现，F.linear是右乘 weight.T
     '''
 
     def __init__(
