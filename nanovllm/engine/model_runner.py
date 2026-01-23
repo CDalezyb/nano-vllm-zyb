@@ -158,7 +158,7 @@ class ModelRunner:
             // block_bytes
             # // 向下取整
         )
-        assert config.num_kvcache_blocks > 0
+        assert config.num_kvcache_blocks > 0, "your num_kvcache_blocks is set to {num_kvcache_blocks}"
         self.kv_cache = torch.empty(
             2,
             hf_config.num_hidden_layers,
