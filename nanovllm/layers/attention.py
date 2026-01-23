@@ -22,6 +22,7 @@ def store_kvcache_kernel(
     slot = tl.load(slot_mapping_ptr + idx)
     if slot == -1:
         return
+    # tl.arange(0, D) 向量化
     key_offsets = idx * key_stride + tl.arange(0, D)
     value_offsets = idx * value_stride + tl.arange(0, D)
     key = tl.load(key_ptr + key_offsets)
@@ -38,12 +39,13 @@ def store_kvcache(
     v_cache: torch.Tensor,
     slot_mapping: torch.Tensor,
 ):
-    N, num_heads, head_dim = key.shape
+    N, num_heads, head_dim = key.shape # N: num of tokens
     D = num_heads * head_dim
     assert key.stride(-1) == 1 and value.stride(-1) == 1
     assert key.stride(1) == head_dim and value.stride(1) == head_dim
     assert k_cache.stride(1) == D and v_cache.stride(1) == D
     assert slot_mapping.numel() == N
+    # N 是 grid_size
     store_kvcache_kernel[(N,)](
         key, key.stride(0), value, value.stride(0), k_cache, v_cache, slot_mapping, D
     )
