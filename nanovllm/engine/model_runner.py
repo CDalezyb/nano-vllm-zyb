@@ -21,8 +21,9 @@ class ModelRunner:
         self.enforce_eager = config.enforce_eager
         self.world_size = config.tensor_parallel_size
         self.rank = rank
+        # event 由 LLMEngine 给定参数
         self.event = event
-
+        # 初始化通信，供model的VocalEmbedding、Liner等模块使用
         dist.init_process_group(
             "nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank
         )
@@ -40,16 +41,20 @@ class ModelRunner:
         torch.set_default_device("cpu")
         torch.set_default_dtype(default_dtype)
 
-        if self.world_size > 1:
+        if self.world_size > 1: # 多卡
             if rank == 0:
+                # 主进程先创建SharedMemory，再 barrier
                 self.shm = SharedMemory(name="nanovllm", create=True, size=2**20)
-                dist.barrier()
+                dist.barrier() 
             else:
+                # 子进程等待主进程创建完毕SharedMemory后，跟主进程同步
+                # 同步完，进入循环
                 dist.barrier()
                 self.shm = SharedMemory(name="nanovllm")
                 self.loop()
 
     def exit(self):
+        # 退出函数（析构）
         if self.world_size > 1:
             self.shm.close()
             dist.barrier()
@@ -72,6 +77,7 @@ class ModelRunner:
         self.event.wait()
         n = int.from_bytes(self.shm.buf[0:4], "little")
         method_name, *args = pickle.loads(self.shm.buf[4 : n + 4])
+        # 子进程是自己的 event, 清除标志位
         self.event.clear()
         return method_name, args
 
@@ -81,7 +87,9 @@ class ModelRunner:
         n = len(data)
         self.shm.buf[0:4] = n.to_bytes(4, "little")
         self.shm.buf[4 : n + 4] = data
+        # 主进程的 event 是所有子进程组成的 list
         for event in self.event:
+            # 类似于 notify()
             event.set()
 
     def call(self, method_name, *args):
