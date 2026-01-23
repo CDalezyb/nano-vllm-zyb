@@ -42,7 +42,7 @@ class Qwen3Attention(nn.Module):
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim**-0.5
         self.qkv_bias = qkv_bias
-
+        # QKVParallelLinear 是 ColumnParallel
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
             self.head_dim,
@@ -94,6 +94,7 @@ class Qwen3Attention(nn.Module):
         k = k.view(-1, self.num_kv_heads, self.head_dim)
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         if not self.qkv_bias:
+            # why norm of Q and K? for stability
             q = self.q_norm(q)
             k = self.k_norm(k)
         # decode 时，positions 是最近生成的 token 在 seq 中的绝对位置（位置计数包括prompt）
@@ -233,6 +234,8 @@ class Qwen3Model(nn.Module):
 
 
 class Qwen3ForCausalLM(nn.Module):
+    ''' ForCausalLM 表示是一个因果模型，有causal mask'''
+    # 用于将模型权重读取，由于有些权重进行合并
     packed_modules_mapping = {
         "q_proj": ("qkv_proj", "q"),
         "k_proj": ("qkv_proj", "k"),

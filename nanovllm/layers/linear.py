@@ -137,6 +137,7 @@ class QKVParallelLinear(ColumnParallelLinear):
     ):
         param_data = param.data
         assert loaded_shard_id in ["q", "k", "v"]
+        # for Qwen3： num_heads = 2* num_kv_heads, GQA
         if loaded_shard_id == "q":
             shard_size = self.num_heads * self.head_size
             shard_offset = 0
@@ -148,7 +149,11 @@ class QKVParallelLinear(ColumnParallelLinear):
             shard_offset = (
                 self.num_heads * self.head_size + self.num_kv_heads * self.head_size
             )
+        # QKVParallelLinear. tp_dim = 0， 对 weight 矩阵进行 行切分（逻辑上是列切分）
+        # param_data 此处得到的是 Wq/Wk/Wv 对应的目标 tensor 位置（dst）
         param_data = param_data.narrow(self.tp_dim, shard_offset, shard_size)
+        # safetensors中，Wq、Wk、Wv是分开存的，这里给定的 loaded_weight 是对应的 q/k/v 的 weight
+        # 读取到同一个 weight 中
         loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_weight)
 
