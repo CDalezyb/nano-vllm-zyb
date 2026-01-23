@@ -293,6 +293,7 @@ class ModelRunner:
         if is_prefill or self.enforce_eager or input_ids.size(0) > 512:
             return self.model.compute_logits(self.model(input_ids, positions))
         else:
+            # decode阶段 且 cuda_graph 且 batch_size<512
             bs = input_ids.size(0)
             context = get_context()
             graph = self.graphs[next(x for x in self.graph_bs if x >= bs)]
@@ -328,7 +329,9 @@ class ModelRunner:
     def capture_cudagraph(self):
         config = self.config
         hf_config = config.hf_config
+        # cuda_graph 限制序列数，不需要捕获那么多图
         max_bs = min(self.config.max_num_seqs, 512)
+        # 限制单sequence的block的个数，向上取整
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
         input_ids = torch.zeros(max_bs, dtype=torch.int64)
         positions = torch.zeros(max_bs, dtype=torch.int64)
@@ -341,7 +344,9 @@ class ModelRunner:
         self.graph_pool = None
 
         for bs in reversed(self.graph_bs):
+            # 定义 cuda_graph
             graph = torch.cuda.CUDAGraph()
+            # is_prefill = False, decode阶段开启cuda_graph
             set_context(
                 False,
                 slot_mapping=slot_mapping[:bs],
@@ -351,6 +356,7 @@ class ModelRunner:
             outputs[:bs] = self.model(input_ids[:bs], positions[:bs])  # warmup
             with torch.cuda.graph(graph, self.graph_pool):
                 outputs[:bs] = self.model(input_ids[:bs], positions[:bs])  # capture
+            # 逆序遍历，第一个graph创建最大的显存池，后续bs的显存占用小于这个bs，可以复用
             if self.graph_pool is None:
                 self.graph_pool = graph.pool()
             self.graphs[bs] = graph
