@@ -53,7 +53,7 @@ class Sequence:
 
     @property
     def num_cached_blocks(self):
-        return self.num_cached_tokens // self.block_size0
+        return self.num_cached_tokens // self.block_size
 
     @property
     def num_blocks(self):
