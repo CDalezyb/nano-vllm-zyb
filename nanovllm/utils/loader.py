@@ -3,6 +3,7 @@ from glob import glob
 import torch
 from torch import nn
 from safetensors import safe_open
+from natsort import natsorted
 
 
 def default_weight_loader(param: nn.Parameter, loaded_weight: torch.Tensor):
@@ -24,10 +25,48 @@ def load_model(model: nn.Module, path: str):
                         weight_loader = getattr(param, "weight_loader")
                         weight_loader(param, f.get_tensor(weight_name), shard_id)
                         break
-                else: # for循环如果没有被打断过，就走到else
-                    param = model.get_parameter(weight_name) # 返回对模型某一层权重的“引用”
+                else:  # for循环如果没有被打断过，就走到else
+                    param = model.get_parameter(
+                        weight_name
+                    )  # 返回对模型某一层权重的“引用”
                     # 如果这一层的参数有“weight_loader” 就返回它，否则就使用给定的 default_weight_loader
-                    weight_loader = getattr( 
+                    weight_loader = getattr(
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, f.get_tensor(weight_name))
+
+
+def print_model(path: str):
+    if "models" in path:
+        display_path = path[path.find("models"):]
+    else:
+        display_path = path
+    print(f"Model Path: {display_path}")
+    print("-" * 50)
+    
+    weight_dict = {}
+    
+    for file in glob(os.path.join(path, "*.safetensors")):
+        with safe_open(file, "pt", "cpu") as f:
+            for weight_name in f.keys():
+                weight_dict[weight_name] = f.get_tensor(weight_name).shape
+    
+    
+    if not weight_dict:
+        print("No .safetensors files or weights found in the path.")
+        return
+    max_name_length = max(len(name) for name in weight_dict.keys())
+    
+    sorted_weight_names = natsorted(weight_dict.keys())
+    for weight_name in sorted_weight_names:
+        shape = weight_dict[weight_name]
+        print(f"{weight_name.ljust(max_name_length)} | Shape: {shape}")
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="nano vllm")
+    parser.add_argument("--model-path", type=str, required=True, help="Path to the directory containing .safetensors files")
+    args = parser.parse_args()
+    
+    print_model(args.model_path)
