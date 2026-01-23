@@ -188,6 +188,9 @@ class ModelRunner:
         return block_tables
 
     def prepare_prefill(self, seqs: list[Sequence]):
+        ''' used in warmup and prefill stage 
+            批量收集多个序列的 "未缓存 token", 准备完整的计算元数据，一次性完成非缓存 token 的 K/V 计算与 KV Cache 初始化 / append
+        '''
         input_ids = []
         positions = []
         cu_seqlens_q = [0]
@@ -198,15 +201,22 @@ class ModelRunner:
         block_tables = None
         for seq in seqs:
             seqlen = len(seq)
+            # 0: num_cached_tokens 的已经缓存，无须计算，只处理未缓存的部分
+            # extend 可以将一个list append 到 一个list的尾部
             input_ids.extend(seq[seq.num_cached_tokens :])
+            # positions 由 seq.num_cached_tokens to seqlen-1，是sep中绝对位置索引
             positions.extend(list(range(seq.num_cached_tokens, seqlen)))
+            # 为什么 q只缓存一部分，k要缓存全部？
             seqlen_q = seqlen - seq.num_cached_tokens
             seqlen_k = seqlen
+            # cumulative sequence lengths 累计序列长度， 用于区分批量中不同序列的边界。
+            # 批量中, 序列 1 长度 100、序列 2 长度 200, cu_seqlens_q就是[0, 100, 300]
+            # 为后续 FlashAttention 批量计算提供 “序列边界信息”，无需对批量序列进行padding（填充）
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen_q)
             cu_seqlens_k.append(cu_seqlens_k[-1] + seqlen_k)
             max_seqlen_q = max(seqlen_q, max_seqlen_q)
             max_seqlen_k = max(seqlen_k, max_seqlen_k)
-            if not seq.block_table:  # warmup
+            if not seq.block_table:  # warmup, no block_table, no kv cache
                 continue
             for i in range(seq.num_cached_blocks, seq.num_blocks):
                 start = seq.block_table[i] * self.block_size
@@ -245,11 +255,16 @@ class ModelRunner:
         return input_ids, positions
 
     def prepare_decode(self, seqs: list[Sequence]):
+        ''' prepare for flash-attention ?
+            input_ids: 最近生成的 token 的 id
+            positions: 最近生成的 token 在其seq中的位置
+        '''
         input_ids = []
         positions = []
         slot_mapping = []
         context_lens = []
         for seq in seqs:
+            # decode 只算一个 token
             input_ids.append(seq.last_token)
             positions.append(len(seq) - 1)
             context_lens.append(len(seq))
