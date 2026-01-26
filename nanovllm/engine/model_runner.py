@@ -40,19 +40,37 @@ class ModelRunner:
             self.capture_cudagraph()
         torch.set_default_device("cpu")
         torch.set_default_dtype(default_dtype)
-
+        shm_name = "nanovllm"
         if self.world_size > 1: # 多卡
             if rank == 0:
                 # 主进程先创建SharedMemory，再 barrier
-                self.shm = SharedMemory(name="nanovllm", create=True, size=2**20)
+                try:
+                    self.shm = SharedMemory(name=shm_name, create=True, size=2**20)
+                    print(f"[rank{rank}] successfully created ShareMemory: {shm_name}")
+                except FileExistsError:
+                    old_shm = SharedMemory(name=shm_name, create=False)
+                    old_shm.unlink()
+                    old_shm.close()
+                    self.shm = SharedMemory(name=shm_name, create=True, size=2**20)
+                    print(f"[rank{rank}] successfully cleared and recreated ShareMemory: {shm_name}")
+                except Exception as e:
+                    print(f"[rank{rank}] Error in creating ShareMemory: {shm_name}")
+                    self.is_running = False
+                    dist.destroy_process_group()
+                    return
                 dist.barrier() 
             else:
                 # 子进程等待主进程创建完毕SharedMemory后，跟主进程同步
                 # 同步完，进入循环
                 dist.barrier()
-                self.shm = SharedMemory(name="nanovllm")
-                self.loop()
-
+                try:
+                    self.shm = SharedMemory(name=shm_name)
+                    print(f"[rank{rank}] successfully connected to ShareMemory: {shm_name}")
+                    self.loop()
+                except Exception as e:
+                    print(f"[rank{rank}] Failed to connected to ShareMemory: {shm_name}")
+                    self.is_running = False
+    
     def exit(self):
         # 退出函数（析构）
         if self.world_size > 1:
