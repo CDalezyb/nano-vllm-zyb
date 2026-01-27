@@ -30,4 +30,19 @@ def main():
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     main()
+=======
+    argparse = argparse.ArgumentParser(description="nano vllm")
+    # default_model_path = os.path.join(os.getenv("MODEL_ROOT_DIR"), "Qwen/Qwen3-0.6B")
+    # default_model_path = os.path.join(os.getenv("MODEL_ROOT_DIR"), "Qwen/Qwen2.5-14B")
+    default_model_path = os.path.join(os.getenv("MODEL_ROOT_DIR"), "Qwen/Qwen3-30B-A3B")
+    argparse.add_argument("--model-path", type=str, default=default_model_path)
+    argparse.add_argument("--tensor-parallel-size", "--tp", type=int, default=1)
+    argparse.add_argument("--enforce-eager", type=bool, default=True)
+    argparse.add_argument("--temperature", type=float, default=0.6)
+    argparse.add_argument("--max-tokens", type=int, default=512)
+    args = argparse.parse_args()
+
+    main(args)
+>>>>>>> 1b28869 (update bench and example)
