@@ -14,6 +14,10 @@ from nanovllm.layers.linear import (
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
+import os
+from glob import glob
+from safetensors import safe_open
+from nanovllm.utils.loader import default_weight_loader
 
 class Qwen3Attention(nn.Module):
 
@@ -40,7 +44,7 @@ class Qwen3Attention(nn.Module):
         self.head_dim = head_dim or hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
-        self.scaling = self.head_dim**-0.5
+        self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
         # QKVParallelLinear 是 ColumnParallel
         self.qkv_proj = QKVParallelLinear(
@@ -263,3 +267,33 @@ class Qwen3ForCausalLM(nn.Module):
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
         return self.lm_head(hidden_states)
+    
+    def load_model(
+        self,
+        path: str,
+    ) -> None:
+        for file in glob(os.path.join(path, "*.safetensors")):
+            with safe_open(file, "pt", "cpu") as f:
+                for weight_name in f.keys():
+                    weight_tensor = f.get_tensor(weight_name)
+                    is_loaded = False
+
+                    # Load packed modules
+                    for k in self.packed_modules_mapping:
+                        if k in weight_name:
+                            v, shard_id = self.packed_modules_mapping[k]
+                            param_name = weight_name.replace(k, v)
+                            param = self.get_parameter(param_name)
+                            weight_loader = getattr(param, "weight_loader")
+                            weight_loader(param, weight_tensor, shard_id)
+                            is_loaded = True
+                            break
+
+                    # Load other modules
+                    if not is_loaded:
+                        param = self.get_parameter(weight_name)
+                        weight_loader = getattr(param, "weight_loader", default_weight_loader)
+                        weight_loader(param, weight_tensor)
+                        is_loaded = True
+
+                    assert is_loaded, f"Weight {weight_name} not loaded"
