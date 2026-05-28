@@ -32,6 +32,7 @@ class LLMEngine:
             self.ps.append(process)
             self.events.append(event)
         # 主节点（TP0)，主进程
+        # TP0的ModelRunner会在初始化时修改config.num_kvcache_blocks, 供后续Scheduler和BlockManager使用
         self.model_runner = ModelRunner(config, 0, self.events)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
@@ -57,7 +58,7 @@ class LLMEngine:
         # 实际上调用 model_runner, 进行推理
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         # postprocess 会根据 model_runer 最新生成的 token_id 更新seq，将新生成的token放在seq的token最后面
-        # 判断 seq 是否已经生成完毕（达到最大长度或者EOS）, 完毕的就从 scheduler.running 队列中移除并且释放block
+        # 判断 seq 是否已经生成完毕（达到最大长度或者EOS）, 完毕的就从 scheduler.running 队列中移除并且释放block资源
         self.scheduler.postprocess(seqs, token_ids)
         outputs = [
             (seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished

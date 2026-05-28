@@ -24,7 +24,8 @@ class Scheduler:
         self.waiting.append(seq)
 
     def schedule(self) -> tuple[list[Sequence], bool]:
-        '''只是确定哪些 Sequence 会被调度到，并不完成实际运行'''
+        '''只是确定哪些 Sequence 会被调度到+分配kvcache blocks，并不完成实际运行, 实际运行在 LLMEngine里调用 model_runner.run()'''
+        
         # 1. prefill 阶段
         scheduled_seqs = []
         num_seqs = 0
@@ -39,6 +40,7 @@ class Scheduler:
             num_seqs += 1
             # 为一个prefill阶段的新Sequence 分配 block
             self.block_manager.allocate(seq)
+            # seq.num_cached_tokens 在 allocate阶段被设置，如果有prefix cache，则大于0 
             num_batched_tokens += len(seq) - seq.num_cached_tokens
             seq.status = SequenceStatus.RUNNING
             self.waiting.popleft()
@@ -48,14 +50,17 @@ class Scheduler:
         if scheduled_seqs:
             return scheduled_seqs, True
 
+        
         # 2. decode 阶段
-        # running队列有等待decode的Sequence 且 num_seqs < 设定的 max_num_seqs
+        # running 队列有等待decode的Sequence 且 num_seqs < 设定的 max_num_seqs
         while self.running and num_seqs < self.max_num_seqs:
             seq = self.running.popleft()
             while not self.block_manager.can_append(seq):
                 if self.running:
+                    # preempt 当前 running队列 最后一个 Sequence，腾出资源给当前 Sequence，当前 Sequence 继续尝试分配直到成功
                     self.preempt(self.running.pop())
                 else:
+                    # 如果 running 队列已经空了，说明当前 Sequence decode 需要的资源超过了整个系统的 capacity，这时只能放弃这个 Sequence，提前返回
                     self.preempt(seq)
                     break
             else:
@@ -77,6 +82,7 @@ class Scheduler:
             if (
                 not seq.ignore_eos and token_id == self.eos
             ) or seq.num_completion_tokens == seq.max_tokens:
+                # 将输出完成/达到最大输出限制的 Sequence 标记为 FINISHED，并且释放它占用的块资源
                 seq.status = SequenceStatus.FINISHED
                 self.block_manager.deallocate(seq)
                 self.running.remove(seq)

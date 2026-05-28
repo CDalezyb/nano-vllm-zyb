@@ -9,9 +9,10 @@ class Block:
     ''' This is the class of block:  nanovllm 的最小物理块单元, 对应KV Cache的一个物理块, 存储连续token序列 '''
 
     def __init__(self, block_id):
-        self.block_id = block_id   # 当前块的唯一ID，全局唯一，初始化时分配
+        self.block_id = block_id   # 当前块的唯一ID，全局唯一，初始化时由 BlockManager 分配
         self.ref_count = 0         # 【核心】块的引用计数，实现多序列共享复用块的关键，0=空闲，>0=被引用
         self.hash = -1             #  # 当前块的哈希值，由compute_hash生成，-1=未计算/无效哈希
+        # hash 值不会为 -1 吗？
         self.token_ids = []        # tokens are stored in this block
 
     def update(self, hash: int, token_ids: list[int]):
@@ -29,7 +30,7 @@ class BlockManager:
        核心能力：分配块、释放块、复用缓存块、追加token扩容块、引用计数管理
     '''
 
-    def __init__(self, num_blocks: int, block_size: int):                  # num_blocks表示可用的block数
+    def __init__(self, num_blocks: int, block_size: int):                  # num_blocks表示可用的block数，由 scheduler 给定
         self.block_size = block_size
         self.blocks: list[Block] = [Block(i) for i in range(num_blocks)]   # 全局所有物理块的数组，索引=block_id，快速通过id取块
         self.hash_to_block_id: dict[int, int] = dict()                     # 哈希值 → 块ID的映射表【缓存复用核心】，通过哈希快速找复用块
@@ -69,8 +70,12 @@ class BlockManager:
     def can_allocate(self, seq: Sequence) -> bool:
         """判断：是否有足够的空闲块，为指定序列分配所需的全部块，prefill时使用"""
         return len(self.free_block_ids) >= seq.num_blocks
+    
+    def can_append(self, seq: Sequence) -> bool:
+        """判断：是否有足够的空闲块，为指定序列分配下一个块，decode时使用"""
+        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
 
-    # allocate kv_cache_blocks for the given Sequence
+    # allocate kv_cache_blocks for the given Sequence in prefill stage
     def allocate(self, seq: Sequence):
         assert not seq.block_table, "分配块时，序列的块表必须为空"
         h = -1              # 临时哈希值，用于链式计算块哈希
@@ -89,6 +94,8 @@ class BlockManager:
             # 缓存失效条件：无哈希对应块 或 块的token内容不一致（哈希碰撞兜底校验）
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
                 cache_miss = True
+            
+            # 从某个block开始cache miss了，后续的块都会miss
             # 分支1：缓存失效 → 分配新块（从空闲队列取第一个）
             if cache_miss:
                 block_id = self.free_block_ids[0]
@@ -110,7 +117,7 @@ class BlockManager:
             seq.block_table.append(block_id)
 
     def deallocate(self, seq: Sequence):
-        """核心方法：释放指定序列占用的所有块（序列推理结束/终止时调用）"""
+        """核心方法：释放指定序列占用的所有块（序列推理结束/被驱逐时调用）"""
         for block_id in reversed(seq.block_table):
             block = self.blocks[block_id]
             block.ref_count -= 1
@@ -119,12 +126,8 @@ class BlockManager:
         seq.num_cached_tokens = 0
         seq.block_table.clear()
 
-    def can_append(self, seq: Sequence) -> bool:
-        """判断：是否有足够的空闲块，为指定序列分配下一个块，decode时使用"""
-        return len(self.free_block_ids) >= (len(seq) % self.block_size == 1)
-
     def may_append(self, seq: Sequence):
-        """核心方法：为序列追加新token时，扩容/更新块（推理时token流式生成的核心逻辑）"""
+        """核心方法：为序列追加新token时，扩容/更新块（decode时token流式生成的核心逻辑），in decode stage"""
         block_table = seq.block_table
         last_block = self.blocks[block_table[-1]]
         # 情况1：序列长度%块容量=1 → 最后一个块已满, 现在生成了一个新的token, 需要分配新块来存储
@@ -141,6 +144,6 @@ class BlockManager:
             h = self.compute_hash(token_ids, prefix_hash)
             last_block.update(h, token_ids)
             self.hash_to_block_id[h] = last_block.block_id
-        # 情况3：序列长度%块容量≠0/1 → 最后一个块还没满，无需处理，哈希保持-1
+        # 情况3：序列长度%块容量≠0/1 → 最后一个块还没满，无需做处理，哈希保持-1
         else:
             assert last_block.hash == -1
